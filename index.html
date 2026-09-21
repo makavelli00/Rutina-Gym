@@ -98,6 +98,11 @@
 
   main{ flex:1; padding:4px 16px 40px 16px; }
 
+  .date-nav{
+    display:flex; align-items:center; justify-content:center; gap:10px;
+    margin:10px 0 4px 0; color:var(--text-dim);
+  }
+  .date-nav .date-label{ font-family:'Oswald',sans-serif; font-size:14px; color:var(--text); min-width:150px; text-align:center; }
   .day-head{ display:flex; align-items:center; justify-content:space-between; margin:10px 0 14px 0; }
   .day-head h2{ font-size:26px; font-weight:600; }
   .day-head .badge{
@@ -224,6 +229,9 @@
   var STORAGE_ROUTINE = 'gt_routine_v1';
   var STORAGE_SESSIONS = 'gt_sessions_v1';
   var STORAGE_THEME = 'gt_theme_v1';
+  var STORAGE_SCHEDULE = 'gt_schedule_v1';
+  var WEEKDAY_NAMES = ['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado','Domingo'];
+  var WEEKDAY_SHORT = ['Lun','Mar','Mié','Jue','Vie','Sáb','Dom'];
 
   var DEFAULT_ROUTINE = [
     { id:'d1', name:'Torso A', rest:false, exercises:[
@@ -261,6 +269,22 @@
     ]}
   ];
 
+  // index 0 = Lunes ... 6 = Domingo
+  var DEFAULT_SCHEDULE = ['d1','d2','d3','d4','d5','d3','d3'];
+
+  function loadSchedule(){
+    try{
+      var raw = localStorage.getItem(STORAGE_SCHEDULE);
+      if(raw) return JSON.parse(raw);
+    }catch(e){}
+    var fresh = DEFAULT_SCHEDULE.slice();
+    saveSchedule(fresh);
+    return fresh;
+  }
+  function saveSchedule(s){
+    try{ localStorage.setItem(STORAGE_SCHEDULE, JSON.stringify(s)); }catch(e){}
+  }
+
   function loadRoutine(){
     try{
       var raw = localStorage.getItem(STORAGE_ROUTINE);
@@ -286,8 +310,7 @@
 
   var routine = loadRoutine();
   var sessions = loadSessions();
-
-  var state = { view:'day', dayId: routine[0].id, editMode:false };
+  var schedule = loadSchedule();
 
   function todayStr(){
     var d = new Date();
@@ -301,13 +324,40 @@
   }
   function uid(){ return 's'+Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
 
+  function dateFromISO(iso){
+    var p = iso.split('-').map(Number);
+    return new Date(p[0], p[1]-1, p[2]);
+  }
+  function isoFromDate(d){
+    var m = String(d.getMonth()+1).padStart(2,'0');
+    var day = String(d.getDate()).padStart(2,'0');
+    return d.getFullYear()+'-'+m+'-'+day;
+  }
+  function addDaysISO(iso, n){
+    var d = dateFromISO(iso);
+    d.setDate(d.getDate()+n);
+    return isoFromDate(d);
+  }
+  function weekdayMon0(iso){
+    var wd = dateFromISO(iso).getDay(); // 0=Sun..6=Sat
+    return (wd+6)%7; // 0=Mon..6=Sun
+  }
+  function mondayOfWeek(iso){
+    return addDaysISO(iso, -weekdayMon0(iso));
+  }
+  function scheduledDayId(iso){
+    return schedule[weekdayMon0(iso)] || routine[0].id;
+  }
+
+  var state = { view:'day', date: todayStr(), dayId: scheduledDayId(todayStr()), editMode:false, weekStart: mondayOfWeek(todayStr()), editSchedule:false };
+
   function findDay(dayId){
     for(var i=0;i<routine.length;i++) if(routine[i].id===dayId) return routine[i];
     return routine[0];
   }
 
-  function getOrCreateSession(dayId){
-    var t = todayStr();
+  function getOrCreateSession(dayId, dateStr){
+    var t = dateStr || todayStr();
     var existing = sessions.find(function(s){ return s.dayId===dayId && s.date===t; });
     if(existing) return existing;
     var day = findDay(dayId);
@@ -320,6 +370,9 @@
     sessions.push(sess);
     saveSessions(sessions);
     return sess;
+  }
+  function findSession(dayId, dateStr){
+    return sessions.find(function(s){ return s.dayId===dayId && s.date===dateStr; }) || null;
   }
 
   function ensureExerciseRows(sess, ex){
@@ -350,7 +403,9 @@
   function render(){
     document.getElementById('dateLine').textContent = new Date().toLocaleDateString('es-AR', { weekday:'long', day:'numeric', month:'long' });
     renderTabs();
-    if(state.view==='day') renderDayView(); else renderProgressView();
+    if(state.view==='day') renderDayView();
+    else if(state.view==='week') renderWeekView();
+    else renderProgressView();
   }
 
   function renderTabs(){
@@ -360,6 +415,7 @@
       var sel = (state.view==='day' && state.dayId===d.id);
       html += '<button data-tab="day:'+d.id+'" aria-selected="'+sel+'">'+escapeHtml(d.name)+'</button>';
     });
+    html += '<button data-tab="week" aria-selected="'+(state.view==='week')+'">Semana</button>';
     html += '<button data-tab="progress" aria-selected="'+(state.view==='progress')+'">Progreso</button>';
     tabs.innerHTML = html;
   }
@@ -375,10 +431,20 @@
       return;
     }
 
-    var sess = getOrCreateSession(day.id);
+    var sess = getOrCreateSession(day.id, state.date);
     day.exercises.forEach(function(ex){ ensureExerciseRows(sess, ex); });
 
-    var html = '<div class="day-head"><h2>'+escapeHtml(day.name)+'</h2>'+
+    var isToday = state.date === todayStr();
+    var wdLabel = WEEKDAY_NAMES[weekdayMon0(state.date)];
+
+    var html = '<div class="date-nav">'+
+      '<button class="icon-btn" data-action="date-prev" title="Día anterior">‹</button>'+
+      '<div class="date-label">'+escapeHtml(wdLabel)+' '+escapeHtml(fmtDate(state.date))+(isToday?' · hoy':'')+'</div>'+
+      '<button class="icon-btn" data-action="date-next" title="Día siguiente">›</button>'+
+      (isToday?'':'<button class="small" data-action="date-today">Hoy</button>')+
+      '</div>';
+
+    html += '<div class="day-head"><h2>'+escapeHtml(day.name)+'</h2>'+
       '<div class="row-actions">'+
       (sess.completed ? '<span class="badge">Completado</span>' : '') +
       '<button class="icon-btn" data-action="toggle-edit" title="Editar ejercicios">'+(state.editMode?'✓':'✎')+'</button>'+
@@ -434,6 +500,68 @@
       });
     });
     return list;
+  }
+
+  function renderWeekView(){
+    var main = document.getElementById('main');
+    var t = todayStr();
+    var isCurrentWeek = state.weekStart === mondayOfWeek(t);
+    var monthLabel = new Date(dateFromISO(state.weekStart)).toLocaleDateString('es-AR', { month:'long', year:'numeric' });
+
+    var html = '<div class="day-head"><h2>Semana</h2>'+
+      '<button class="icon-btn" data-action="toggle-edit-schedule" title="Editar horario">'+(state.editSchedule?'✓':'✎')+'</button>'+
+      '</div>';
+
+    html += '<div class="date-nav">'+
+      '<button class="icon-btn" data-action="week-prev" title="Semana anterior">‹</button>'+
+      '<div class="date-label">'+escapeHtml(monthLabel)+'</div>'+
+      '<button class="icon-btn" data-action="week-next" title="Semana siguiente">›</button>'+
+      (isCurrentWeek?'':'<button class="small" data-action="week-today">Esta semana</button>')+
+      '</div>';
+
+    if(state.editSchedule){
+      html += '<div class="add-ex-form">';
+      WEEKDAY_NAMES.forEach(function(name, wd){
+        html += '<div style="display:flex;align-items:center;gap:8px;">'+
+          '<div style="width:78px;font-family:Oswald,sans-serif;font-size:13px;">'+name+'</div>'+
+          '<select class="sched-select" data-wd="'+wd+'" style="flex:1;font-family:inherit;font-size:13px;padding:7px;border-radius:7px;border:1px solid var(--line);background:var(--panel);color:var(--text);">'+
+          routine.map(function(d){ return '<option value="'+d.id+'" '+(schedule[wd]===d.id?'selected':'')+'>'+escapeHtml(d.name)+'</option>'; }).join('')+
+          '</select></div>';
+      });
+      html += '</div>';
+    }
+
+    for(var i=0;i<7;i++){
+      var dateStr = addDaysISO(state.weekStart, i);
+      var dId = schedule[i] || routine[0].id;
+      var d = findDay(dId);
+      var sess = findSession(dId, dateStr);
+      var isFuture = dateStr > t;
+      var isToday = dateStr === t;
+
+      var statusHtml = '';
+      if(d.rest){
+        statusHtml = '<span style="color:var(--text-dim);">Descanso</span>';
+      } else if(sess && sess.completed){
+        statusHtml = '<span style="color:var(--success);font-weight:600;">✓ Completado</span>';
+      } else if(sess){
+        statusHtml = '<span style="color:var(--accent2);">● En progreso</span>';
+      } else if(isFuture){
+        statusHtml = '<span style="color:var(--text-dim);">— Programado</span>';
+      } else {
+        statusHtml = '<span style="color:var(--danger);">Sin registrar</span>';
+      }
+
+      var clickable = !d.rest;
+      html += '<div class="hist-item" style="display:flex;justify-content:space-between;align-items:center;'+(isToday?'border-color:var(--accent);':'')+(clickable?'cursor:pointer;':'')+'"'+
+        (clickable ? ' data-action="goto-date" data-date="'+dateStr+'" data-day="'+dId+'"' : '')+'>'+
+        '<div><div class="hdate">'+WEEKDAY_SHORT[i]+' '+fmtDate(dateStr).slice(0,5)+(isToday?' · hoy':'')+'</div>'+
+        '<div class="sets-list">'+escapeHtml(d.name)+'</div></div>'+
+        '<div style="font-size:12px;text-align:right;">'+statusHtml+'</div>'+
+        '</div>';
+    }
+
+    main.innerHTML = html;
   }
 
   var progressSelected = null;
@@ -573,7 +701,8 @@
     if(!btn) return;
     var val = btn.getAttribute('data-tab');
     if(val === 'progress'){ state.view = 'progress'; }
-    else { state.view = 'day'; state.dayId = val.split(':')[1]; state.editMode = false; }
+    else if(val === 'week'){ state.view = 'week'; }
+    else { state.view = 'day'; state.dayId = val.split(':')[1]; state.date = todayStr(); state.editMode = false; }
     render();
   });
 
@@ -601,9 +730,47 @@
       render();
     }
     else if(action === 'toggle-complete'){
-      var sess = getOrCreateSession(day.id);
+      var sess = getOrCreateSession(day.id, state.date);
       sess.completed = !sess.completed;
       saveSessions(sessions);
+      render();
+    }
+    else if(action === 'date-prev'){
+      state.date = addDaysISO(state.date, -1);
+      state.dayId = scheduledDayId(state.date);
+      render();
+    }
+    else if(action === 'date-next'){
+      state.date = addDaysISO(state.date, 1);
+      state.dayId = scheduledDayId(state.date);
+      render();
+    }
+    else if(action === 'date-today'){
+      state.date = todayStr();
+      state.dayId = scheduledDayId(state.date);
+      render();
+    }
+    else if(action === 'week-prev'){
+      state.weekStart = addDaysISO(state.weekStart, -7);
+      render();
+    }
+    else if(action === 'week-next'){
+      state.weekStart = addDaysISO(state.weekStart, 7);
+      render();
+    }
+    else if(action === 'week-today'){
+      state.weekStart = mondayOfWeek(todayStr());
+      render();
+    }
+    else if(action === 'goto-date'){
+      var dateStr = t.getAttribute('data-date');
+      var dId = t.getAttribute('data-day');
+      if(findDay(dId).rest) return;
+      state.view = 'day'; state.date = dateStr; state.dayId = dId; state.editMode = false;
+      render();
+    }
+    else if(action === 'toggle-edit-schedule'){
+      state.editSchedule = !state.editSchedule;
       render();
     }
     else if(action === 'del-ex'){
@@ -631,10 +798,13 @@
       if(confirm('Esto borra TODA la rutina y el historial guardado. ¿Continuar?')){
         localStorage.removeItem(STORAGE_ROUTINE);
         localStorage.removeItem(STORAGE_SESSIONS);
+        localStorage.removeItem(STORAGE_SCHEDULE);
         routine = loadRoutine();
         sessions = loadSessions();
+        schedule = loadSchedule();
         progressSelected = null;
-        state.view = 'day'; state.dayId = routine[0].id;
+        state.date = todayStr();
+        state.view = 'day'; state.dayId = scheduledDayId(state.date);
         render();
       }
     }
@@ -647,7 +817,7 @@
     var exId = t.getAttribute('data-ex');
     var idx = parseInt(t.getAttribute('data-idx'), 10);
     var day = findDay(state.dayId);
-    var sess = getOrCreateSession(day.id);
+    var sess = getOrCreateSession(day.id, state.date);
     if(!sess.data[exId] || !sess.data[exId][idx]) return;
 
     if(action === 'set-w') sess.data[exId][idx].w = t.value;
@@ -669,7 +839,7 @@
       var exId = t.getAttribute('data-ex');
       var idx = parseInt(t.getAttribute('data-idx'), 10);
       var day = findDay(state.dayId);
-      var sess = getOrCreateSession(day.id);
+      var sess = getOrCreateSession(day.id, state.date);
       if(sess.data[exId] && sess.data[exId][idx]){
         sess.data[exId][idx].done = t.checked;
         saveSessions(sessions);
@@ -678,6 +848,12 @@
     if(t.id === 'exSelect'){
       progressSelected = t.value;
       renderProgressView();
+    }
+    if(t.classList.contains('sched-select')){
+      var wd = parseInt(t.getAttribute('data-wd'), 10);
+      schedule[wd] = t.value;
+      saveSchedule(schedule);
+      render();
     }
   });
 
